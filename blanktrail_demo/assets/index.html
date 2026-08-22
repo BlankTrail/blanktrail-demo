@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BlankTrail Proxy — challenge pass-through demo</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<header>
+  <h1>BlankTrail Proxy — challenge pass-through demo</h1>
+  <p class="lede">Two lanes, one target list. The baseline lane is a bare Python client;
+  the other goes through a BlankTrail port. Everything here is client-side.</p>
+</header>
+
+<main>
+<section class="card">
+  <h2>Targets</h2>
+  <textarea id="targets" rows="6" spellcheck="false"
+    placeholder="One URL per line. Lines starting with # are comments.&#10;&#10;https://example.com&#10;example.org/path"></textarea>
+  <p class="hint">Test only what you are allowed to test.</p>
+</section>
+
+<section class="card">
+  <h2>Baseline lane</h2>
+  <div class="row">
+    <label><input type="radio" name="lane_a" value="upstream" checked> Through an upstream proxy</label>
+    <label><input type="radio" name="lane_a" value="direct"> Direct</label>
+    <label><input type="radio" name="lane_a" value="off"> Off</label>
+  </div>
+  <label class="field" id="lane_a_upstream_field">Upstream proxy
+    <input id="lane_a_upstream" type="text" placeholder="socks5://127.0.0.1:1080">
+  </label>
+  <p class="hint">Give the baseline lane the same upstream the BlankTrail port uses. Then
+  both lanes leave from one IP and the difference between them is the fingerprint and the
+  solver — nothing else.</p>
+</section>
+
+<section class="card">
+  <h2>BlankTrail lane</h2>
+  <div class="row">
+    <label><input type="radio" name="lane_b" value="preset" checked> Preset proxy</label>
+    <label><input type="radio" name="lane_b" value="api"> REST API</label>
+  </div>
+
+  <div id="panel_preset">
+    <label class="field">Proxy URLs
+      <textarea id="preset_urls" rows="3" spellcheck="false"
+        placeholder="http://127.0.0.1:9000&#10;http://127.0.0.1:9001"></textarea>
+    </label>
+    <p class="hint">Ports you already opened in BlankTrail. One line is a fixed port;
+    several lines are a pool, used round-robin across the targets.</p>
+  </div>
+
+  <div id="panel_api" hidden>
+    <div class="grid">
+      <label class="field">API base URL<input id="api_base" type="text" value="http://127.0.0.1:8891"></label>
+      <label class="field">API key<input id="api_key" type="password" autocomplete="off"></label>
+      <label class="field">Port<input id="port" type="number" value="9000" min="1" max="65535"></label>
+      <label class="field">Port protocol
+        <select id="protocol_b"><option value="http">HTTP CONNECT</option><option value="socks5">SOCKS5</option></select>
+      </label>
+      <label class="field">Profile mode
+        <select id="mode"><option value="database">database</option><option value="random">random</option><option value="auto">auto</option></select>
+      </label>
+      <label class="field">Browser<input id="browser" type="text" placeholder="chrome"></label>
+      <label class="field">OS<input id="os" type="text" placeholder="windows"></label>
+      <label class="field">Upstream<input id="upstream" type="text" placeholder="socks5://127.0.0.1:1080"></label>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="js_solver" checked> Challenge Breaker (js_solver)</label>
+      <label><input type="checkbox" id="keep_sessions"> Keep sessions</label>
+      <label><input type="checkbox" id="auto_rotate" checked> Auto-rotate profile</label>
+      <label><input type="checkbox" id="h2_spoofing" checked> HTTP/2 spoofing</label>
+      <label><input type="checkbox" id="spoof_user_agent" checked> Spoof User-Agent</label>
+      <label><input type="checkbox" id="close_when_done" checked> Close the port when done</label>
+    </div>
+    <div class="row">
+      <button type="button" id="btn_probe">Check the API</button>
+      <span id="probe_out" class="hint"></span>
+    </div>
+    <p class="hint">The key is sent to your own BlankTrail instance and is never stored.</p>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Transport and TLS</h2>
+  <div class="grid">
+    <label class="field">HTTP client
+      <select id="protocol"><option value="h2">HTTP/2 (httpx)</option><option value="h1">HTTP/1.1 (requests)</option></select>
+    </label>
+    <label class="field">Timeout, s<input id="timeout" type="number" value="60" min="5" max="300"></label>
+    <label class="field">Pause min, s<input id="delay_min" type="number" value="0" min="0" step="0.5"></label>
+    <label class="field">Pause max, s<input id="delay_max" type="number" value="0" min="0" step="0.5"></label>
+  </div>
+  <div class="row">
+    <label><input type="radio" name="trust_source" value="system" checked> OS trust store</label>
+    <label><input type="radio" name="trust_source" value="api"> Fetch CA from the API</label>
+    <label><input type="radio" name="trust_source" value="file"> CA file</label>
+  </div>
+  <label class="field" id="ca_path_field" hidden>Path to ca.crt<input id="ca_path" type="text"></label>
+  <label class="row"><input type="checkbox" id="tls_disabled"> Disable TLS verification
+    <span class="hint">diagnostics only; verdicts stop proving the chain is sound</span>
+  </label>
+  <p class="hint">Verification runs on the BlankTrail lane and is part of the measurement:
+  it proves the substituted certificate is well-formed and its SAN matches the host.
+  <code>requests</code> and <code>httpx</code> ignore the OS store on their own, so the
+  demo builds the trust context itself.</p>
+</section>
+
+<section class="card">
+  <div class="row">
+    <button type="button" id="btn_run" class="primary">Run</button>
+    <button type="button" id="btn_stop" disabled>Stop</button>
+    <span id="counters" class="counters"></span>
+  </div>
+  <div id="warnings"></div>
+</section>
+
+<section id="log" class="log"></section>
+</main>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>
