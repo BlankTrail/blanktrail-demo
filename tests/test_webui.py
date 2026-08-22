@@ -56,3 +56,13 @@ def test_the_page_ships_no_external_resources(client):
     body = client.get("/").get_data(as_text=True)
     for marker in ("http://", "https://cdn", "//cdn.", "googleapis"):
         assert marker not in body.replace("http://127.0.0.1", "")
+
+
+@pytest.mark.parametrize("body", ["42", '"x"', "[1, 2, 3]", "true", "null"])
+def test_probe_endpoint_survives_a_json_body_that_is_not_an_object(client, body):
+    # request.get_json returns a scalar or list here, and `or {}` does not replace a
+    # truthy one — an unguarded .get() would make Flask answer 500.
+    response = client.post("/api/probe", data=body,
+                           content_type="application/json")
+    assert response.status_code == 200
+    assert response.get_json()["ok"] is False

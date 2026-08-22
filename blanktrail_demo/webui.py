@@ -50,6 +50,12 @@ def create_app() -> Flask:
     @app.post("/api/probe")
     def probe_route():
         payload = request.get_json(force=True, silent=True) or {}
+        # A JSON body that is valid but not an object (42, "x", [1,2]) parses to a
+        # non-dict, and `or {}` does not replace a truthy one. Without this guard the
+        # next .get() raises AttributeError and Flask answers 500 — the one thing this
+        # tool promises never to do on bad input.
+        if not isinstance(payload, dict):
+            payload = {}
         api = BlankTrailApi(str(payload.get("api_base") or "http://127.0.0.1:8891"),
                             str(payload.get("api_key") or ""))
         try:
