@@ -12,7 +12,7 @@ from blanktrail_demo.trust import (
 
 # A syntactically valid but meaningless PEM block: enough to prove concatenation
 # without shipping a real certificate in the repo.
-FAKE_PEM = b"-----BEGIN CERTIFICATE-----\nQkxCVUkJTA==\n-----END CERTIFICATE-----\n"
+FAKE_PEM = b"-----BEGIN CERTIFICATE-----\nQkxBTktUUkFJTA==\n-----END CERTIFICATE-----\n"
 
 
 # Tests that call build() need a PARSEABLE certificate, because build() hands the
