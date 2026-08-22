@@ -1,0 +1,13 @@
+flask>=3.0
+requests>=2.32
+httpx[http2,socks]>=0.27
+certifi>=2024.2.2
+truststore>=0.9 ; python_version >= "3.10"
+brotli>=1.1
+zstandard>=0.22
+# urllib3 gates zstd on compression.zstd (3.14) / backports.zstd and never uses
+# the `zstandard` package. Without this, a zstd body reaches classify() still
+# compressed, body markers are not found, and `blocked` silently becomes
+# `unknown` — a false VOID on a target that does challenge.
+backports.zstd>=1.0 ; python_version < "3.14"
+pytest>=8.0

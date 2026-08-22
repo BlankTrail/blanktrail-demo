@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.idea/
+.vscode/
+*.egg-info/
+dist/
+build/
+
+# Working materials — not published
+docs/superpowers/
