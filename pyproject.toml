@@ -1,9 +1,0 @@
-[build-system]
-requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "blanktrail-demo"
-version = "1.0.0"
-description = "Client-side demo for BlankTrail Proxy against Cloudflare and AWS WAF targets."
-requires-python = ">=3.10"
