@@ -1,4 +1,5 @@
 import os
+import re
 import ssl
 
 import certifi
@@ -11,28 +12,21 @@ from blanktrail_demo.trust import (
 
 # A syntactically valid but meaningless PEM block: enough to prove concatenation
 # without shipping a real certificate in the repo.
-FAKE_PEM = b"""-----BEGIN CERTIFICATE-----
-MIIDgDCCAmigAwIBAgITZx0ARYu61cp3KFW+HyH4f7n1dDANBgkqhkiG9w0BAQsF
-ADBQMQswCQYDVQQGEwJVUzENMAsGA1UECAwEVGVzdDENMAsGA1UEBwwEVGVzdDEN
-MAsGA1UECgwEVGVzdDEUMBIGA1UEAwwLZXhhbXBsZS5jb20wHhcNMjYwODIyMjE0
-ODQ4WhcNMjYwODIzMjE0ODQ4WjBQMQswCQYDVQQGEwJVUzENMAsGA1UECAwEVGVz
-dDENMAsGA1UEBwwEVGVzdDENMAsGA1UECgwEVGVzdDEUMBIGA1UEAwwLZXhhbXBs
-ZS5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCuQMP6BCjAbP8O
-Fp/EkgQcXxKzfY6nYLsnTkTmJ4+gIh9G2sWjxjZCJmIJ9GRRdu56m8YCT6R4499J
-5o6L3b8z1VXo1Gg1cadsrmCUcpaV80V/Vr2tS1lvVsL7sOvlYnbzBW/A8TVhlcU7
-VEsHnjoxHUZe1jG3y0ddLIiqmGs+/d+hAbaGtpO+zyJxgAKOzFryI+saBjhe1nq8
-CZXegt/XBZ1Ibq9eCO9OExbKrV5kO411T8F8De+QgLjI+lBOoiivrHqW9M9NG7WT
-vkv70bk5qQ6zJMoqi/Nf1zm8z2g1vh8GRB5Fx1kKENzd2O/zaO/wxVcVHrnD3HaC
-iO2vAsyVAgMBAAGjUzBRMB0GA1UdDgQWBBQbL9s3ZXmYxmw/elvc1wr+KZMUTDAf
-BgNVHSMEGDAWgBQbL9s3ZXmYxmw/elvc1wr+KZMUTDAPBgNVHRMBAf8EBTADAQH/
-MA0GCSqGSIb3DQEBCwUAA4IBAQB1uKCCD9QO9MdSA0CeZtXC2fgkTTH0ZhhJAhAW
-DOOjBI/y79QqBQLRkLZkHlTWQei3ssbZ6CXcR37eHDaNMjw+p0BaBww8H32dncDC
-qHd2hhBBYwKiUS4A3vPAXv7llWJTCD4vuNNyu3LE4uq/AqdGgR9dRk2TtLVzr2e0
-upRF7X/oJahz3zvYKVX7BtRgwLs1prVt3Ll+27pwx0TinGGAl0EQzf9ThKAK6oHB
-klmAgL7ff5ktncSmNyCWK8Rj2IhZ5nPGnOaXkkVs1PSNFY12LdoHoBiZjk8YHa/w
-vCOIQuYrH1CGyya3kuZROIcHnLorYVA8tFuIMXiD1UQp85bt
------END CERTIFICATE-----
-"""
+FAKE_PEM = b"-----BEGIN CERTIFICATE-----\nQkxCVUkJTA==\n-----END CERTIFICATE-----\n"
+
+
+# Tests that call build() need a PARSEABLE certificate, because build() hands the
+# bundle to ssl.create_default_context(cafile=...), which parses it. certifi's own
+# first certificate serves: it is real, already present in every environment, and
+# ships nothing new in this repo. A duplicate certificate inside a CA bundle is fine.
+def _first_certifi_cert() -> bytes:
+    blob = open(certifi.where(), "rb").read()
+    match = re.search(rb"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", blob, re.S)
+    assert match, "certifi bundle contains no certificate"
+    return match.group(0) + b"\n"
+
+
+REAL_PEM = _first_certifi_cert()
 
 
 def test_disabled_yields_verify_false_and_says_so():
@@ -78,7 +72,7 @@ def test_combined_bundle_contains_both_certifi_and_the_extra_pem():
 
 def test_file_source_reads_the_pem_and_builds_a_bundle(tmp_path):
     ca = tmp_path / "ca.crt"
-    ca.write_bytes(FAKE_PEM)
+    ca.write_bytes(REAL_PEM)
     trust = build(SOURCE_FILE, ca_path=str(ca))
     try:
         assert isinstance(trust.verify, ssl.SSLContext)
@@ -90,7 +84,7 @@ def test_file_source_reads_the_pem_and_builds_a_bundle(tmp_path):
 
 def test_close_removes_the_temporary_bundle(tmp_path):
     ca = tmp_path / "ca.crt"
-    ca.write_bytes(FAKE_PEM)
+    ca.write_bytes(REAL_PEM)
     trust = build(SOURCE_FILE, ca_path=str(ca))
     path = trust.bundle_path
     trust.close()
@@ -99,7 +93,7 @@ def test_close_removes_the_temporary_bundle(tmp_path):
 
 def test_close_is_idempotent(tmp_path):
     ca = tmp_path / "ca.crt"
-    ca.write_bytes(FAKE_PEM)
+    ca.write_bytes(REAL_PEM)
     trust = build(SOURCE_FILE, ca_path=str(ca))
     trust.close()
     trust.close()
@@ -120,7 +114,7 @@ def test_api_source_without_a_fetched_pem_raises():
 
 
 def test_api_source_uses_the_fetched_pem():
-    trust = build(SOURCE_API, ca_pem=FAKE_PEM)
+    trust = build(SOURCE_API, ca_pem=REAL_PEM)
     try:
         assert isinstance(trust.verify, ssl.SSLContext)
     finally:
