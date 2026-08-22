@@ -2,6 +2,8 @@ import json
 
 import pytest
 
+from blanktrail_demo import webui
+from blanktrail_demo.btapi import ApiError
 from blanktrail_demo.webui import create_app
 
 
@@ -58,11 +60,28 @@ def test_the_page_ships_no_external_resources(client):
         assert marker not in body.replace("http://127.0.0.1", "")
 
 
-@pytest.mark.parametrize("body", ["42", '"x"', "[1, 2, 3]", "true", "null"])
-def test_probe_endpoint_survives_a_json_body_that_is_not_an_object(client, body):
+def test_probe_endpoint_survives_a_json_body_that_is_not_an_object(client, monkeypatch):
     # request.get_json returns a scalar or list here, and `or {}` does not replace a
     # truthy one — an unguarded .get() would make Flask answer 500.
-    response = client.post("/api/probe", data=body,
-                           content_type="application/json")
-    assert response.status_code == 200
-    assert response.get_json()["ok"] is False
+    #
+    # The client is stubbed so the route never leaves the process: with a non-object
+    # body there is no api_base to point somewhere harmless, and dialling the default
+    # 127.0.0.1:8891 would make the result depend on whether the machine running the
+    # suite happens to have a proxy listening.
+    class UnreachableApi:
+        def __init__(self, base_url, api_key, *args, **kwargs):
+            pass
+
+        def health(self):
+            raise ApiError("stubbed: no API reachable")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(webui, "BlankTrailApi", UnreachableApi)
+
+    for body in ("42", '"x"', "[1, 2, 3]", "true", "null"):
+        response = client.post("/api/probe", data=body,
+                               content_type="application/json")
+        assert response.status_code == 200, f"body {body!r} produced {response.status_code}"
+        assert response.get_json()["ok"] is False
