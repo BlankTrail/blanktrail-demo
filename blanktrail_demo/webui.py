@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, stream_with_context
@@ -10,7 +11,30 @@ from flask import Flask, Response, jsonify, request, stream_with_context
 from .btapi import ApiError, BlankTrailApi
 from .runner import execute
 
-ASSETS = Path(__file__).parent / "assets"
+
+def _assets_dir() -> Path:
+    """Where index.html / app.js / style.css live.
+
+    Un-frozen (the normal `python -m blanktrail_demo` case, and every test in
+    this suite), this is the assets/ folder next to this module — unchanged
+    from before.
+
+    Frozen into a PyInstaller one-file exe, the source tree this module
+    thinks it lives in does not exist on disk: at startup PyInstaller unpacks
+    the bundle's data files into a fresh temporary directory and publishes
+    its path as `sys._MEIPASS`. build-windows.ps1 adds the assets folder to
+    that bundle at the same `blanktrail_demo/assets` relative layout, so the
+    frozen lookup mirrors the source layout instead of guessing at
+    `__file__`, which PyInstaller does not promise to leave pointing at a
+    real file for a bundled module.
+    """
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        return Path(bundle_root) / "blanktrail_demo" / "assets"
+    return Path(__file__).parent / "assets"
+
+
+ASSETS = _assets_dir()
 ASSETS_RESOLVED = ASSETS.resolve()
 
 

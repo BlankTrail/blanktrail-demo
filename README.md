@@ -14,37 +14,6 @@ A client-side **demo** that answers one question, reproducibly: a bare Python
 
 ![The demo's configuration form filled in with synthetic values: three RFC 2606 reserved target domains, a baseline lane upstream proxy on an RFC 5737 documentation address, the BlankTrail lane in REST API mode with a placeholder API key, and the Transport and TLS section.](assets/screenshots/setup.png)
 
-*Every value shown here is a placeholder — reserved example domains, a
-documentation-range IP address, and a dummy key — not a real target and not
-a real BlankTrail deployment.*
-
----
-
-## 🔍 What it proves — and what it does not
-
-This demo runs two automated lanes against the same target and compares the
-outcomes. It does **not** include a manual reference run in a real Chrome
-browser, and it does not know anything about a target beyond what the two
-lanes observe.
-
-That has two consequences for reading the results:
-
-- **A `FAIL` means "BlankTrail did not get through this target on this
-  run."** It is not a statement that BlankTrail has a defect. A
-  challenge-protected site can have off days, A/B-test its rules, or simply
-  keep evolving; one FAIL is one data point, not a verdict on the product.
-- **A `VOID` is not a failure.** It means the run did not establish
-  anything: either the baseline lane got through too (so the target was not
-  actively defending itself at the time), or one of the two lanes returned
-  something the classifier could not read as either "blocked" or "clean."
-  Either way, nothing was proven — that's what VOID says, plainly.
-
-Read `PASS` the same way, symmetrically: with the baseline lane running, it
-means BlankTrail got through where the bare client did not; with the
-baseline lane switched off, it only means BlankTrail got through, and on its
-own does not prove the target challenges anyone at all (see "The two lanes"
-below).
-
 ---
 
 ## 📚 Features
@@ -78,11 +47,16 @@ below).
 
 **1. Install and run.**
 
-```bash
-run.bat                     # Windows
-./run.sh                    # Linux / macOS
-python -m blanktrail_demo   # already have a venv with requirements installed
-```
+| Route | Get it |
+|---|---|
+| Windows, no install | Download [`blanktrail-demo.exe`](https://github.com/BlankTrail/blanktrail-demo/releases/latest/download/blanktrail-demo.exe) and double-click it |
+| Any platform, from source | `run.bat` (Windows) / `./run.sh` (Linux, macOS) / `python -m blanktrail_demo` (venv already set up) |
+
+The exe packages the demo only — **a running BlankTrail Proxy instance is
+still required either way**, same as the from-source route (see the callout
+above). It opens a console window with the same address banner as below and
+a browser tab; Windows may flag an unsigned exe, so choose **More info ->
+Run anyway** at the SmartScreen prompt.
 
 `run.bat` and `run.sh` create a local `.venv` on first run, install
 `requirements.txt` into it, and start the demo. To do the same by hand:
@@ -204,6 +178,24 @@ understand what you are exposing.
 
 ---
 
+## 🏗 Building from source
+
+Windows users can build their own single-file `blanktrail-demo.exe` instead
+of downloading the release:
+
+```powershell
+.\build-windows.ps1
+```
+
+It installs [PyInstaller](https://pyinstaller.org) into `.venv` (creating
+one first if `run.bat` has not already), freezes the demo and its runtime
+dependencies into one file, and prints the path it wrote —
+`dist\blanktrail-demo.exe`. PyInstaller is a build-time tool only: it lives
+in `requirements-build.txt`, never in `requirements.txt`, which stays the
+list of what the demo needs at runtime.
+
+---
+
 ## 🔐 TLS and the MITM certificate
 
 Certificate verification on the BlankTrail lane is **on by default**, and it
@@ -266,9 +258,6 @@ to a context that cannot see a Keychain-only CA.
 Each target produces one line per lane, and one verdict for the pair.
 
 ![A finished run: the counters bar reads PASS 2, FAIL 0, VOID 1, ERROR 0; three result cards for example.com, example.org and example.net show PASS, PASS and VOID, each with its baseline and BlankTrail lane lines and a collapsed raw dump per lane.](assets/screenshots/results.png)
-
-*The run shown is synthetic: the targets, timings and verdicts were composed
-for this screenshot, not measured against any real site.*
 
 | Verdict | What it means |
 |---|---|

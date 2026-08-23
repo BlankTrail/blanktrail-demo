@@ -1,0 +1,4 @@
+# Build-time only. Used by build-windows.ps1 to freeze the app into a single
+# blanktrail-demo.exe. Never installed at runtime and never merged into
+# requirements.txt, which is the runtime contract for the demo itself.
+pyinstaller>=6.11
