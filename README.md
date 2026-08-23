@@ -275,7 +275,7 @@ for this screenshot, not measured against any real site.*
 | `PASS` | The baseline lane was blocked (or switched off) and the BlankTrail lane got through. |
 | `FAIL` | The baseline lane was blocked (or switched off) and the BlankTrail lane did **not** get through either. One data point that BlankTrail did not get through on this run — not a statement that this is a defect in BlankTrail. |
 | `VOID` | The run proved nothing: either the baseline lane got through too — only possible while it is running, and meaning the target was not actively defending itself at the time — or a lane that did run returned a response the classifier could not read as blocked or clean; open its raw dump and read it yourself. VOID is not a defect. |
-| `ERROR` | A request itself failed — network, TLS, or an unreadable response — before any verdict about blocking could be reached. |
+| `ERROR` | A request itself failed — network or TLS — before any verdict about blocking could be reached. |
 
 When the baseline lane is switched off, a PASS only means BlankTrail got
 through; on its own it does not prove the target challenges bare clients at
