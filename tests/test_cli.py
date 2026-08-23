@@ -1,3 +1,4 @@
+import blanktrail_demo.cli as cli
 from blanktrail_demo.cli import parse_args
 
 
@@ -16,3 +17,12 @@ def test_host_and_port_can_be_overridden():
 
 def test_no_open_suppresses_the_browser():
     assert parse_args(["--no-open"]).no_open is True
+
+
+def test_main_reports_a_taken_port_instead_of_a_traceback(monkeypatch):
+    class FakeApp:
+        def run(self, **kwargs):
+            raise OSError("[Errno 98] Address already in use")
+
+    monkeypatch.setattr(cli, "create_app", lambda: FakeApp())
+    assert cli.main(["--no-open"]) == 1

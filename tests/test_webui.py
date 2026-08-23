@@ -60,6 +60,31 @@ def test_the_page_ships_no_external_resources(client):
         assert marker not in body.replace("http://127.0.0.1", "")
 
 
+def test_probe_endpoint_survives_a_malformed_ports_list(client, monkeypatch):
+    # [p.get("port") for p in ports.get("ports", [])] assumed every element was
+    # a dict; a malformed API response must not turn into a 500 here either.
+    class MalformedPortsApi:
+        def __init__(self, base_url, api_key, *args, **kwargs):
+            pass
+
+        def health(self):
+            return {"status": "ok"}
+
+        def ports(self):
+            return {"total_open": 1, "max_ports": 5, "ports": ["not-a-dict", 42, None]}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(webui, "BlankTrailApi", MalformedPortsApi)
+    response = client.post("/api/probe", json={"api_base": "http://127.0.0.1:1",
+                                               "api_key": "x"})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["ports"] == []
+
+
 def test_probe_endpoint_survives_a_json_body_that_is_not_an_object(client, monkeypatch):
     # request.get_json returns a scalar or list here, and `or {}` does not replace a
     # truthy one — an unguarded .get() would make Flask answer 500.

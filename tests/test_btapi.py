@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from blanktrail_demo.btapi import ApiError, BlankTrailApi, open_body
@@ -89,8 +91,14 @@ def test_base_url_trailing_slash_does_not_double_up():
 def test_api_key_travels_in_the_x_api_key_header():
     api = make_api(FakeResponse(200, {"ports": []}), key="secret-key")
     api.ports()
-    _, _, kwargs = api._session.calls[0]
+    _, url, kwargs = api._session.calls[0]
     assert kwargs["headers"]["X-API-Key"] == "secret-key"
+    # The key must travel ONLY in that header — never in the URL, in query
+    # parameters, or in the JSON body, all of which are far more likely than a
+    # header to be logged, cached, or echoed back somewhere.
+    assert "secret-key" not in url
+    assert "secret-key" not in json.dumps(kwargs.get("params") or {})
+    assert "secret-key" not in json.dumps(kwargs.get("json") or {})
 
 
 def test_open_port_posts_the_body():

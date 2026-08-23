@@ -1,5 +1,3 @@
-import pytest
-
 from blanktrail_demo.targets import MAX_TARGETS, parse_targets
 
 
