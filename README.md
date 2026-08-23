@@ -44,7 +44,7 @@ Either way, the process prints an address and opens it in your browser:
 BlankTrail demo -> http://127.0.0.1:8790/
 ```
 
-The web UI binds to `127.0.0.1` only — reachable from this machine, not from the network — and has no login of its own, so that is a deliberate default, not an oversight. Useful flags:
+The web UI binds to `127.0.0.1` only — reachable from this machine, not from the network — and it has no login of its own; change `--host` only if you understand what you are exposing. Useful flags:
 
 | Flag | Default | Meaning |
 |---|---|---|
