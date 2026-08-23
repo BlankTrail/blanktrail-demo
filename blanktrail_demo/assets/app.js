@@ -180,20 +180,26 @@ async function start() {
 
 async function probeApi() {
   $("probe_out").textContent = "checking…";
-  const response = await fetch("/api/probe", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      api_base: $("api_base").value,
-      api_key: $("api_key").value,
-      want_ca: radio("trust_source") === "api",
-    }),
-  });
-  const data = await response.json();
-  $("probe_out").textContent = data.ok
-    ? `ok — ${data.total_open}/${data.max_ports} ports open` +
-      (data.ca ? ", CA reachable" : "")
-    : `failed — ${data.error}`;
+  try {
+    const response = await fetch("/api/probe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        api_base: $("api_base").value,
+        api_key: $("api_key").value,
+        want_ca: radio("trust_source") === "api",
+      }),
+    });
+    const data = await response.json();
+    $("probe_out").textContent = data.ok
+      ? `ok — ${data.total_open}/${data.max_ports} ports open` +
+        (data.ca ? ", CA reachable" : "")
+      : `failed — ${data.error}`;
+  } catch (error) {
+    // A network failure or a non-JSON response must not leave the label
+    // reading "checking…" forever.
+    $("probe_out").textContent = `failed — ${String(error)}`;
+  }
 }
 
 document.querySelectorAll('input[name="lane_a"], input[name="lane_b"], input[name="trust_source"]')

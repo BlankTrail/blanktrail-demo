@@ -11,6 +11,7 @@ from .btapi import ApiError, BlankTrailApi
 from .runner import execute
 
 ASSETS = Path(__file__).parent / "assets"
+ASSETS_RESOLVED = ASSETS.resolve()
 
 
 def create_app() -> Flask:
@@ -24,7 +25,7 @@ def create_app() -> Flask:
     @app.get("/assets/<path:name>")
     def asset(name: str) -> Response:
         path = (ASSETS / name).resolve()
-        if not path.is_file() or ASSETS.resolve() not in path.parents:
+        if not path.is_file() or ASSETS_RESOLVED not in path.parents:
             return Response("not found", status=404)
         types = {".js": "text/javascript", ".css": "text/css"}
         return Response(path.read_bytes(),
@@ -48,7 +49,7 @@ def create_app() -> Flask:
                         headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
     @app.post("/api/probe")
-    def probe_route():
+    def probe_route() -> Response:
         payload = request.get_json(force=True, silent=True) or {}
         # A JSON body that is valid but not an object (42, "x", [1,2]) parses to a
         # non-dict, and `or {}` does not replace a truthy one. Without this guard the
@@ -61,9 +62,15 @@ def create_app() -> Flask:
         try:
             api.health()
             ports = api.ports()
+            # Same principle as the payload guard above: the API is someone else's
+            # process, and a "ports" value that is not a list — or a list with
+            # non-dict entries — must not turn into a 500 here.
+            raw_ports = ports.get("ports", [])
+            if not isinstance(raw_ports, list):
+                raw_ports = []
             result = {"ok": True, "total_open": ports.get("total_open", 0),
                       "max_ports": ports.get("max_ports", 0),
-                      "ports": [p.get("port") for p in ports.get("ports", [])]}
+                      "ports": [p.get("port") for p in raw_ports if isinstance(p, dict)]}
             if payload.get("want_ca"):
                 # Only whether it worked. The certificate itself is not echoed
                 # back into the page.

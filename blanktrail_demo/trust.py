@@ -73,7 +73,8 @@ def combined_bundle(pem: bytes) -> str:
     """
     handle, path = tempfile.mkstemp(prefix="blanktrail-ca-", suffix=".pem")
     with os.fdopen(handle, "wb") as out:
-        out.write(open(certifi.where(), "rb").read())
+        with open(certifi.where(), "rb") as certifi_bundle:
+            out.write(certifi_bundle.read())
         out.write(b"\n")
         out.write(pem.strip())
         out.write(b"\n")
@@ -100,7 +101,8 @@ def build(source: str, *, disabled: bool = False, ca_pem: bytes | None = None,
         if not os.path.isfile(ca_path):
             raise TrustError(f"CA file not found: {ca_path}")
         try:
-            pem = open(ca_path, "rb").read()
+            with open(ca_path, "rb") as ca_file:
+                pem = ca_file.read()
         except OSError as exc:
             raise TrustError(f"cannot read the CA file: {exc}") from exc
         label = f"CA file + certifi ({os.path.basename(ca_path)})"

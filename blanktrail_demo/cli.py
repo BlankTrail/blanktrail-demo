@@ -34,7 +34,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"BlankTrail demo -> {url}")
     if not args.no_open:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
-    create_app().run(host=args.host, port=args.port, threaded=True, debug=False)
+    try:
+        create_app().run(host=args.host, port=args.port, threaded=True, debug=False)
+    except OSError as exc:
+        print(f"could not start the web UI on {args.host}:{args.port} — the port is "
+              f"likely already in use ({exc})", file=sys.stderr)
+        return 1
     return 0
 
 

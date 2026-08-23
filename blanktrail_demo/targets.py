@@ -73,7 +73,7 @@ def parse_targets(text: str) -> tuple[list[Target], list[ParseError]]:
             continue
         if len(targets) >= MAX_TARGETS:
             errors.append(ParseError(line_no, line,
-                                     f"more than {MAX_TARGETS} targets; the rest were dropped"))
+                                     f"more than {MAX_TARGETS} targets; trim the list"))
             break
         try:
             url = _normalize(line)
