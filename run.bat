@@ -9,7 +9,7 @@ if not exist ".venv" (
 
 call ".venv\Scripts\activate.bat" || goto :fail
 
-python -c "import flask, httpx, truststore" 2>nul
+python -c "import flask, httpx, truststore, brotli, zstandard, socks" 2>nul
 if errorlevel 1 (
   echo Installing dependencies...
   python -m pip install --upgrade pip >nul

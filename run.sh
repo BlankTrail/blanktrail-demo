@@ -12,9 +12,9 @@ fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
 
-if ! python -c "import flask, httpx, truststore" >/dev/null 2>&1; then
+if ! python -c "import flask, httpx, truststore, brotli, zstandard, socks" >/dev/null 2>&1; then
   echo "Installing dependencies..."
-  python -m pip install --upgrade pip >/dev/null
+  python -m pip install --upgrade pip >/dev/null || true
   python -m pip install -r requirements.txt
 fi
 

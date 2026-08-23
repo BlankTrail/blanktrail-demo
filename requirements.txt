@@ -1,5 +1,9 @@
 flask>=3.0
-requests>=2.32
+# The `socks` extra installs PySocks, which `requests` needs to speak to any
+# socks5h:// proxy. httpx's own `socks` extra (below) brings `socksio`, which
+# serves httpx only — it does nothing for requests. Without this, a SOCKS
+# proxy fails with InvalidSchema instead of making a request.
+requests[socks]>=2.32
 httpx[http2,socks]>=0.27
 certifi>=2024.2.2
 truststore>=0.9 ; python_version >= "3.10"
