@@ -5,6 +5,11 @@ const radio = (name) => document.querySelector(`input[name="${name}"]:checked`).
 
 let controller = null;
 
+// Raw dumps arrive BEFORE the result they belong to, so they are buffered here and
+// attached once the card exists. Appending them on arrival put every dump on the
+// PREVIOUS target's card and left the last target with none.
+let pendingRaw = [];
+
 function collect() {
   return {
     targets: $("targets").value,
@@ -86,20 +91,25 @@ function renderResult(event) {
   if (!event.no_baseline) item.appendChild(laneLine("baseline", event.a));
   item.appendChild(laneLine("BlankTrail", event.b));
   item.appendChild(el("p", "why", event.why));
+  pendingRaw.forEach((entry) => item.appendChild(rawDetails(entry)));
+  pendingRaw = [];
   $("log").appendChild(item);
   item.scrollIntoView({ block: "nearest" });
 }
 
-function renderRaw(entry) {
-  if (!entry.raw) return;
+function rawDetails(entry) {
   const details = document.createElement("details");
   details.appendChild(el("summary", null,
     `raw dump — lane ${entry.lane} (${entry.kb} KB)`));
   const pre = document.createElement("pre");
   pre.textContent = entry.raw;
   details.appendChild(pre);
-  const items = $("log").querySelectorAll(".item");
-  (items[items.length - 1] || $("log")).appendChild(details);
+  return details;
+}
+
+function renderRaw(entry) {
+  if (!entry.raw) return;
+  pendingRaw.push(entry);
 }
 
 function renderStats(event) {
@@ -111,6 +121,7 @@ function renderStats(event) {
 function handle(event) {
   if (event.type === "meta") return renderMeta(event);
   if (event.type === "target") {
+    pendingRaw = [];
     $("log").appendChild(el("div", "status", `→ ${event.n}/${event.total} ${event.url}`));
     return;
   }
@@ -131,6 +142,7 @@ function handle(event) {
 
 async function start() {
   $("log").textContent = "";
+  pendingRaw = [];
   $("counters").textContent = "";
   $("btn_run").disabled = true;
   $("btn_stop").disabled = false;
