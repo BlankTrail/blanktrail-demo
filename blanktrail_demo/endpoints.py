@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import socket
 from abc import ABC, abstractmethod
+from urllib.parse import urlsplit
 
 from .btapi import ApiError, BlankTrailApi
 from .proxyurl import hostport
 
 
 def tcp_reachable(url: str, timeout: float = 5.0) -> str:
-    """"" when the endpoint accepts a TCP connection, else the reason."""
+    """Empty string when the endpoint accepts a TCP connection, else the reason."""
     pair = hostport(url)
     if not pair:
         return f"cannot parse host:port from {url!r}"
@@ -28,8 +29,8 @@ def tcp_reachable(url: str, timeout: float = 5.0) -> str:
 class Endpoint(ABC):
     @abstractmethod
     def preflight(self) -> str:
-        """"" when ready, else ONE explicit sentence. Failing here stops the run
-        before the first request, instead of printing N silent errors."""
+        """Empty string when ready, else ONE explicit sentence. Failing here stops
+        the run before the first request, instead of printing N silent errors."""
 
     @abstractmethod
     def acquire(self, i: int) -> str:
@@ -91,6 +92,9 @@ class ApiEndpoint(Endpoint):
         self.protocol = str(body.get("protocol") or "http")
         self.profile = ""
         self._opened = False
+        # The port is opened on whatever machine the API lives on, so the proxy
+        # host is the API's host — not necessarily this machine.
+        self.host = urlsplit(api.base).hostname or "127.0.0.1"
 
     def preflight(self) -> str:
         try:
@@ -105,26 +109,32 @@ class ApiEndpoint(Endpoint):
         profile = result.get("current_profile") or {}
         if isinstance(profile, dict):
             self.profile = str(profile.get("name") or "")
+        error = tcp_reachable(self.acquire(0))
+        if error:
+            return f"lane B: port {self.port} opened but is not reachable — {error}"
         return ""
 
     def acquire(self, i: int) -> str:
         scheme = "socks5h" if self.protocol == "socks5" else "http"
-        return f"{scheme}://127.0.0.1:{self.port}"
+        return f"{scheme}://{self.host}:{self.port}"
 
     def describe(self) -> dict:
         return {"mode": "api", "port": self.port, "protocol": self.protocol,
                 "profile": self.profile, "js_solver": bool(self.body.get("js_solver"))}
 
     def close(self) -> None:
-        if not self._opened or not self.close_when_done:
-            self._opened = False
-            return
-        self._opened = False
+        # self.api.close() must run on every path — including the two where the
+        # port itself is left alone — or the session leaks: a validation error,
+        # close_when_done=False, and a failed preflight all end up here.
         try:
-            self.api.close_port(self.port)
-        except ApiError:
-            # Closing is best effort: the port also closes itself on idle
-            # timeout, and a failure here must not mask the run's real result.
-            pass
+            if self._opened and self.close_when_done:
+                try:
+                    self.api.close_port(self.port)
+                except ApiError:
+                    # Closing is best effort: the port also closes itself on idle
+                    # timeout, and a failure here must not mask the run's real
+                    # result.
+                    pass
+            self._opened = False
         finally:
             self.api.close()

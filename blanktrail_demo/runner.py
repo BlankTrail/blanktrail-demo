@@ -36,7 +36,6 @@ class RunPlan:
     delay_min: float
     delay_max: float
     warnings: list[str] = field(default_factory=list)
-    api: BlankTrailApi | None = None
 
 
 def _clamp(value, low, high, default):
@@ -128,6 +127,8 @@ def build_run(config: Mapping) -> tuple[RunPlan | None, list[str]]:
             errors.append(f"TLS trust source could not be used: {exc}")
 
     if errors or trust is None or endpoint is None:
+        if api is not None:
+            api.close()
         return None, errors
 
     delay_min = _clamp(config.get("delay_min"), 0, 60, 0)
@@ -144,7 +145,6 @@ def build_run(config: Mapping) -> tuple[RunPlan | None, list[str]]:
         delay_min=delay_min,
         delay_max=delay_max,
         warnings=warnings,
-        api=api,
     ), []
 
 
