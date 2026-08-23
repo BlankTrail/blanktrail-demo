@@ -11,3 +11,7 @@ build/
 
 # Working materials — not published
 docs/superpowers/
+
+# Local tooling state — never published
+.claude/
+.superpowers/
