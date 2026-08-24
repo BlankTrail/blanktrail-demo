@@ -16,6 +16,14 @@ AWS_ACTIONS = ("captcha", "challenge")
 # Cloudflare only serves an interstitial on these statuses.
 CF_CHALLENGE_STATUS = (403, 503)
 
+# Statuses on which DataDome, PerimeterX/HUMAN, Imperva and Akamai were
+# observed to challenge or block, across a probe of 784 domains: DataDome
+# answered with 401 and 403; Akamai with 403 and 429; PerimeterX and Imperva
+# with 403; and 405/406 turned up on other blocks in the same sweep. Kept
+# separate from CF_CHALLENGE_STATUS so Cloudflare's own pinned behaviour can
+# never drift when this one changes.
+ANTIBOT_CHALLENGE_STATUS = (401, 403, 405, 406, 429, 503)
+
 # Verdict -> counter key. Keys are JS-safe (no dashes): the UI reads them as
 # properties.
 STAT_KEY = {"PASS": "passed", "FAIL": "failed", "VOID": "void", "ERROR": "err"}
@@ -53,17 +61,49 @@ def _signals(headers, body, cookies) -> dict:
         "aws_waf_token": "aws-waf-token" in names,
         "server": _hdr(headers, "server"),
         "via": _hdr(headers, "via"),
+        # DataDome.
+        "dd_header": bool(_hdr(headers, "x-datadome")),
+        "dd_cookie": "datadome" in names,
+        "dd_body": "captcha-delivery.com" in low
+                   or ("#cmsg" in low and "@keyframes a" in low),
+        # PerimeterX / HUMAN. Cookies are prefix-matched: PerimeterX sets
+        # several `_px*` names and `_pxhd` is one of them, not a separate
+        # family of its own.
+        "px_header": bool(_hdr(headers, "x-px")),
+        "px_cookie": any(name.startswith("_px") for name in names),
+        "px_body": any(marker in low for marker in
+                       ("px-captcha", "perimeterx", "human-challenge")),
+        # Imperva.
+        "imp_header": bool(_hdr(headers, "x-iinfo")),
+        "imp_cookie": "incap_ses" in names or "visid_incap" in names,
+        "imp_body": "_incapsula_resource" in low or "incapsula incident" in low,
+        # Akamai. Weakest evidence of the four -- no header here is exclusive
+        # to it, which is why it is checked last in classify().
+        "ak_server": "akamai" in _hdr(headers, "server").lower(),
+        "ak_header": bool(_hdr(headers, "x-akamai-transformed")),
+        "ak_cookie": bool(names & {"_abck", "bm_sz", "ak_bmsc"}),
+        "ak_body": "errors.edgesuite.net" in low,
     }
 
 
 def _soft_vendor(signals: dict) -> str:
-    """Best-effort vendor label for the report when nothing was blocked."""
+    """Best-effort vendor label for the report when nothing was blocked. Same
+    precedence as classify(): the more specific vendors first, Akamai last --
+    this never affects state, only the label."""
     server = signals["server"].lower()
     via = signals["via"].lower()
+    if signals["dd_header"] or signals["dd_cookie"]:
+        return "datadome"
+    if signals["px_header"] or signals["px_cookie"]:
+        return "perimeterx"
+    if signals["imp_header"] or signals["imp_cookie"]:
+        return "imperva"
     if "cloudflare" in server or signals["cf_clearance"] or signals["chl_platform"]:
         return "cloudflare"
     if "cloudfront" in via or "cloudfront" in server or signals["aws_waf_token"]:
         return "awswaf"
+    if signals["ak_server"] or signals["ak_header"] or signals["ak_cookie"]:
+        return "akamai"
     return ""
 
 
@@ -89,7 +129,56 @@ def classify(status: int, headers: Mapping[str, str], body: str,
                 "reason": f"HTTP {status}: x-amzn-waf-action: {action}",
                 "signals": signals}
 
-    # 2. Cloudflare: a DISJUNCTION of three signals, status-gated. A jschl
+    # 2. DataDome, PerimeterX/HUMAN and Imperva are checked before
+    #    Cloudflare's rule below on purpose: all three can sit behind a
+    #    Cloudflare edge (a Cloudflare `server` header, sometimes even a
+    #    Cloudflare challenge of its own) while the block page actually
+    #    belongs to them. Checking the more specific vendor first attributes
+    #    the site to whoever actually blocked it, not to the CDN in front of
+    #    it. Each is its own status-gated disjunction, same shape as
+    #    Cloudflare's below.
+    if status in ANTIBOT_CHALLENGE_STATUS:
+        hits = []
+        if signals["dd_header"]:
+            hits.append("x-datadome header present")
+        if signals["dd_cookie"]:
+            hits.append("datadome cookie")
+        if signals["dd_body"]:
+            hits.append("DataDome block markers in body")
+        if hits:
+            return {"state": BLOCKED, "vendor": "datadome",
+                    "reason": f"HTTP {status}: " + ", ".join(hits),
+                    "signals": signals}
+
+    # 3. PerimeterX / HUMAN.
+    if status in ANTIBOT_CHALLENGE_STATUS:
+        hits = []
+        if signals["px_header"]:
+            hits.append("x-px header present")
+        if signals["px_cookie"]:
+            hits.append("_px*/_pxhd cookie")
+        if signals["px_body"]:
+            hits.append("PerimeterX/HUMAN markers in body")
+        if hits:
+            return {"state": BLOCKED, "vendor": "perimeterx",
+                    "reason": f"HTTP {status}: " + ", ".join(hits),
+                    "signals": signals}
+
+    # 4. Imperva.
+    if status in ANTIBOT_CHALLENGE_STATUS:
+        hits = []
+        if signals["imp_header"]:
+            hits.append("x-iinfo header present")
+        if signals["imp_cookie"]:
+            hits.append("incap_ses/visid_incap cookie")
+        if signals["imp_body"]:
+            hits.append("Imperva markers in body")
+        if hits:
+            return {"state": BLOCKED, "vendor": "imperva",
+                    "reason": f"HTTP {status}: " + ", ".join(hits),
+                    "signals": signals}
+
+    # 5. Cloudflare: a DISJUNCTION of three signals, status-gated. A jschl
     #    challenge carries no cf-mitigated header, so requiring it would mean
     #    never seeing jschl.
     if status in CF_CHALLENGE_STATUS:
@@ -105,14 +194,36 @@ def classify(status: int, headers: Mapping[str, str], body: str,
                     "reason": f"HTTP {status}: " + ", ".join(hits),
                     "signals": signals}
 
+    # 6. Akamai last: its evidence is the weakest of the four -- mostly
+    #    cookie-based, and the one header it has is not exclusive to it --
+    #    so anything checked above gets first claim on an ambiguous response.
+    if status in ANTIBOT_CHALLENGE_STATUS:
+        hits = []
+        if signals["ak_server"]:
+            hits.append("server header contains akamai")
+        if signals["ak_header"]:
+            hits.append("x-akamai-transformed header present")
+        if signals["ak_cookie"]:
+            hits.append("_abck/bm_sz/ak_bmsc cookie")
+        if signals["ak_body"]:
+            hits.append("errors.edgesuite.net in body")
+        if hits:
+            return {"state": BLOCKED, "vendor": "akamai",
+                    "reason": f"HTTP {status}: " + ", ".join(hits),
+                    "signals": signals}
+
     if action:
         return {"state": UNKNOWN, "vendor": "awswaf",
                 "reason": f"HTTP {status}: unrecognised x-amzn-waf-action: {action}",
                 "signals": signals}
 
-    # 3. THE MAIN INVARIANT: 200 means passed regardless of the body. Markers
+    # 7. THE MAIN INVARIANT: 200 means passed regardless of the body. Markers
     #    lie on their own — Cloudflare injects challenge-platform into ordinary
-    #    pages, and Turnstile widgets sit embedded in open ones.
+    #    pages, and Turnstile widgets sit embedded in open ones. The same is
+    #    true of every check above: DataDome, PerimeterX, Imperva and Akamai
+    #    all set their cookies on ordinary successful pages too, which is
+    #    exactly why every one of them is gated on ANTIBOT_CHALLENGE_STATUS /
+    #    CF_CHALLENGE_STATUS above and never runs on its own against a 200.
     if status == 200:
         extra = []
         if signals["cf_clearance"]:

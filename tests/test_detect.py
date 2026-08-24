@@ -50,6 +50,192 @@ def test_403_without_any_cloudflare_signal_is_unknown():
     assert o["state"] == UNKNOWN
 
 
+# ---------------------------------------------------------- classify: DataDome
+
+@pytest.mark.parametrize("status", [401, 403, 405, 406, 429, 503])
+def test_all_new_vendor_challenge_statuses_are_recognised(status):
+    # DataDome answered with 401 and 403 in the probe; Akamai with 403 and
+    # 429; PerimeterX and Imperva with 403; 405 and 406 turned up on other
+    # blocks in the same sweep. All four new checks share one status gate, so
+    # proving it here for one vendor proves the gate itself for all four.
+    o = classify(status, {"x-datadome": "protected"}, "", [])
+    assert o["state"] == BLOCKED
+    assert o["vendor"] == "datadome"
+
+
+@pytest.mark.parametrize("headers,body,cookies", [
+    ({"x-datadome": "protected"}, "", []),
+    ({}, "", ["datadome"]),
+    ({}, "<html>captcha-delivery.com</html>", []),
+    ({}, "<style>#cmsg{display:block} @keyframes a { from { opacity: 0 } }</style>", []),
+])
+def test_datadome_signals_are_a_disjunction(headers, body, cookies):
+    o = classify(403, headers, body, cookies)
+    assert o["state"] == BLOCKED
+    assert o["vendor"] == "datadome"
+
+
+def test_datadome_body_marker_needs_both_cmsg_and_keyframes():
+    # Either alone is too weak on its own -- both together are the measured
+    # DataDome block-page signature.
+    o = classify(403, {}, "<style>#cmsg{display:block}</style>", [])
+    assert o["state"] != BLOCKED
+
+
+def test_200_is_passed_even_with_datadome_cookie_present():
+    # The invariant that guards Cloudflare above must hold for every new
+    # vendor too: DataDome sets this cookie on ordinary successful pages.
+    o = classify(200, {}, "", ["datadome"])
+    assert o["state"] == PASSED
+    assert o["vendor"] == "datadome"
+
+
+# -------------------------------------------------------- classify: PerimeterX
+
+@pytest.mark.parametrize("headers,body,cookies", [
+    ({"x-px": "1"}, "", []),
+    ({}, "", ["_px"]),
+    ({}, "", ["_pxhd"]),
+    ({}, "<html>px-captcha</html>", []),
+    ({}, "<html>perimeterx</html>", []),
+    ({}, "<html>human-challenge</html>", []),
+])
+def test_perimeterx_signals_are_a_disjunction(headers, body, cookies):
+    o = classify(403, headers, body, cookies)
+    assert o["state"] == BLOCKED
+    assert o["vendor"] == "perimeterx"
+
+
+def test_200_is_passed_even_with_perimeterx_cookies_present():
+    o = classify(200, {}, "", ["_px", "_pxhd"])
+    assert o["state"] == PASSED
+    assert o["vendor"] == "perimeterx"
+
+
+# ----------------------------------------------------------- classify: Imperva
+
+@pytest.mark.parametrize("headers,body,cookies", [
+    ({"x-iinfo": "12-3456789-0"}, "", []),
+    ({}, "", ["incap_ses"]),
+    ({}, "", ["visid_incap"]),
+    ({}, "<html>_incapsula_resource</html>", []),
+    ({}, "<html>Incapsula incident ID: 12345</html>", []),
+])
+def test_imperva_signals_are_a_disjunction(headers, body, cookies):
+    o = classify(403, headers, body, cookies)
+    assert o["state"] == BLOCKED
+    assert o["vendor"] == "imperva"
+
+
+def test_200_is_passed_even_with_imperva_cookies_present():
+    o = classify(200, {}, "", ["incap_ses", "visid_incap"])
+    assert o["state"] == PASSED
+    assert o["vendor"] == "imperva"
+
+
+# ------------------------------------------------------------ classify: Akamai
+
+@pytest.mark.parametrize("headers,body,cookies", [
+    ({"server": "AkamaiGHost"}, "", []),
+    ({"x-akamai-transformed": "1 - 2 - 3"}, "", []),
+    ({}, "", ["_abck"]),
+    ({}, "", ["bm_sz"]),
+    ({}, "", ["ak_bmsc"]),
+    ({}, "<html>errors.edgesuite.net</html>", []),
+])
+def test_akamai_signals_are_a_disjunction(headers, body, cookies):
+    o = classify(403, headers, body, cookies)
+    assert o["state"] == BLOCKED
+    assert o["vendor"] == "akamai"
+
+
+def test_200_is_passed_even_with_akamai_cookies_present():
+    o = classify(200, {}, "", ["_abck", "bm_sz", "ak_bmsc"])
+    assert o["state"] == PASSED
+    assert o["vendor"] == "akamai"
+
+
+# ------------------------------------------------- classify: new vendor bodies
+
+@pytest.mark.parametrize("body,vendor", [
+    ("<html>CAPTCHA-DELIVERY.COM</html>", "datadome"),
+    ("<html>PerimeterX</html>", "perimeterx"),
+    ("<html>INCAPSULA INCIDENT</html>", "imperva"),
+    ("<html>Errors.Edgesuite.Net</html>", "akamai"),
+])
+def test_new_vendor_body_markers_are_case_insensitive(body, vendor):
+    o = classify(403, {}, body, [])
+    assert o["state"] == BLOCKED
+    assert o["vendor"] == vendor
+
+
+# --------------------------------------------------- classify: vendor ordering
+
+@pytest.mark.parametrize("vendor_headers,vendor", [
+    ({"x-datadome": "protected"}, "datadome"),
+    ({"x-px": "1"}, "perimeterx"),
+    ({"x-iinfo": "12-3456789-0"}, "imperva"),
+])
+def test_new_vendor_wins_over_a_cloudflare_server_header(vendor_headers, vendor):
+    # A Cloudflare `server` header alone never decides Cloudflare's own block
+    # (see the disjunction above) -- but a naive "Cloudflare first" ordering
+    # could still misattribute a different vendor's block page to Cloudflare
+    # merely because it runs first and a `server` header happens to be
+    # present. This mirrors an observed, real pattern: a site fronted by a
+    # Cloudflare edge while a different vendor is the one actually blocking.
+    headers = {"server": "cloudflare", **vendor_headers}
+    o = classify(403, headers, "", [])
+    assert o["state"] == BLOCKED
+    assert o["vendor"] == vendor
+
+
+def test_datadome_wins_even_against_a_genuine_cloudflare_challenge():
+    # Stronger than the case above: Cloudflare's own decisive signal
+    # (cf-mitigated) is present too, so this only passes if DataDome's check
+    # genuinely runs first -- not merely because Cloudflare's own disjunction
+    # stayed silent.
+    o = classify(403, {"cf-mitigated": "challenge", "x-datadome": "protected"}, "", [])
+    assert o["state"] == BLOCKED
+    assert o["vendor"] == "datadome"
+
+
+def test_akamai_evidence_does_not_preempt_cloudflares_own_challenge():
+    # Akamai is checked last because its evidence is the weakest of the
+    # four -- mostly cookie-based -- so it must never preempt a genuine
+    # Cloudflare challenge appearing on the same response.
+    o = classify(403, {"cf-mitigated": "challenge",
+                        "x-akamai-transformed": "1 - 2 - 3"}, "", [])
+    assert o["state"] == BLOCKED
+    assert o["vendor"] == "cloudflare"
+
+
+@pytest.mark.parametrize("cookies,vendor", [
+    (["datadome"], "datadome"),
+    (["_px"], "perimeterx"),
+    (["incap_ses"], "imperva"),
+    (["_abck"], "akamai"),
+])
+def test_ungated_status_with_only_vendor_cookies_is_not_blocked(cookies, vendor):
+    # 302 is not in the new vendors' status gate. These vendors set their
+    # cookies on ordinary pages too, so cookie presence alone at an ungated
+    # status must never read as blocked.
+    o = classify(302, {}, "", cookies)
+    assert o["state"] != BLOCKED
+
+
+@pytest.mark.parametrize("cookies,vendor", [
+    (["datadome"], "datadome"),
+    (["_pxhd"], "perimeterx"),
+    (["incap_ses"], "imperva"),
+    (["_abck"], "akamai"),
+])
+def test_soft_vendor_names_the_new_vendors_even_when_unrecognised(cookies, vendor):
+    # _soft_vendor() must never affect state -- only the reporting label.
+    o = classify(500, {}, "", cookies)
+    assert o["state"] == UNKNOWN
+    assert o["vendor"] == vendor
+
+
 # ------------------------------------------------------------ classify: passed
 
 def test_200_is_passed_even_with_challenge_platform_in_the_body():
