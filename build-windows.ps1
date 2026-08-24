@@ -7,7 +7,15 @@
 # PyInstaller is a build-time tool only. It lives in requirements-build.txt,
 # never in requirements.txt, which lists what the demo needs at runtime.
 
-$ErrorActionPreference = "Stop"
+# Deliberately NOT setting $ErrorActionPreference = "Stop" here. In Windows
+# PowerShell 5.1, a terminating-error preference makes a native command's
+# stderr output abort the script: each stderr line gets wrapped in a
+# NativeCommandError, even when the command goes on to exit 0. PyInstaller
+# writes its ordinary INFO log to stderr, so the very first log line would
+# kill this script on a build that is actually working. Every native command
+# below is checked via $LASTEXITCODE instead, which is the correct way to
+# detect a real failure and is not fooled by stderr -- do not reinstate the
+# blanket preference above.
 Set-Location -LiteralPath $PSScriptRoot
 
 if (-not (Test-Path ".venv")) {
