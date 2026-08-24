@@ -289,8 +289,12 @@ of those vendors' own signals present is still attributed to that edge
 rather than read as unrecognised — but its reason says so plainly ("edge
 attribution, not a recognised challenge"), because the real cause could just
 as well be the site's own rule, a geographic restriction or an
-authentication requirement. Read the lane's reason before treating a PASS or
-FAIL as proof of active bot protection.
+authentication requirement.
+
+A PASS or FAIL resting on that weaker evidence says so itself: the verdict
+drops the phrase "protection is active" and names which lane was attributed
+to an edge rather than read as a recognised challenge. Only a verdict that
+still claims active protection was earned on a vendor signal.
 
 ---
 
