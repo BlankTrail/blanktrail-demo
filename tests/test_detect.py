@@ -236,6 +236,122 @@ def test_soft_vendor_names_the_new_vendors_even_when_unrecognised(cookies, vendo
     assert o["vendor"] == vendor
 
 
+# ------------------------------------------------- classify: edge attribution
+
+@pytest.mark.parametrize("edge,headers", [
+    ("cloudflare", {"server": "cloudflare"}),
+    ("cloudflare", {"cf-ray": "7d3a1c9f2e4b0011-SJC"}),
+    ("akamai", {"x-akamai-session-info": "true"}),
+    ("cloudfront", {"via": "1.1 abc123.cloudfront.net (CloudFront)"}),
+    ("cloudfront", {"server": "CloudFront"}),
+    ("cloudfront", {"x-amz-cf-id": "abcDEF123=="}),
+    ("awselb", {"server": "awselb/2.0"}),
+    ("fastly", {"x-fastly-request-id": "abc123"}),
+    ("fastly", {"via": "1.1 varnish", "x-served-by": "cache-abc123-XYZ"}),
+])
+def test_edge_is_attributed_at_a_gated_status_when_nothing_else_recognised(edge, headers):
+    o = classify(403, headers, "", [])
+    assert o["state"] == BLOCKED
+    assert o["vendor"] == edge
+    assert o["signals"]["edge_attributed"] is True
+
+
+@pytest.mark.parametrize("status", [401, 403, 405, 406, 429, 503])
+def test_edge_attribution_shares_the_antibot_status_gate(status):
+    # Same gate as DataDome/PerimeterX/Imperva/Akamai, not the narrower
+    # Cloudflare-only CF_CHALLENGE_STATUS -- proven once here for all five
+    # edges, same as the existing vendors' shared-gate test above.
+    o = classify(status, {"server": "cloudflare"}, "", [])
+    assert o["state"] == BLOCKED
+    assert o["vendor"] == "cloudflare"
+    assert o["signals"]["edge_attributed"] is True
+
+
+@pytest.mark.parametrize("headers", [
+    {"server": "cloudflare"},
+    {"cf-ray": "7d3a1c9f2e4b0011-SJC"},
+    {"x-akamai-session-info": "true"},
+    {"via": "1.1 abc123.cloudfront.net (CloudFront)"},
+    {"x-amz-cf-id": "abcDEF123=="},
+    {"server": "awselb/2.0"},
+    {"x-fastly-request-id": "abc123"},
+    {"via": "1.1 varnish", "x-served-by": "cache-abc123-XYZ"},
+])
+def test_200_with_edge_headers_is_still_passed(headers):
+    # THE MAIN INVARIANT holds for every edge, not just Cloudflare: 200 is
+    # passed regardless of which CDN or load balancer answered.
+    o = classify(200, headers, "", [])
+    assert o["state"] == PASSED
+    assert o["signals"]["edge_attributed"] is False
+
+
+@pytest.mark.parametrize("headers", [
+    {"server": "cloudflare"},
+    {"cf-ray": "7d3a1c9f2e4b0011-SJC"},
+    {"x-akamai-session-info": "true"},
+    {"via": "1.1 abc123.cloudfront.net (CloudFront)"},
+    {"x-amz-cf-id": "abcDEF123=="},
+    {"server": "awselb/2.0"},
+    {"x-fastly-request-id": "abc123"},
+    {"via": "1.1 varnish", "x-served-by": "cache-abc123-XYZ"},
+])
+def test_edge_headers_at_an_ungated_status_do_not_attribute(headers):
+    # 302 is not in ANTIBOT_CHALLENGE_STATUS -- edge attribution must not fire
+    # any more than a real vendor check would.
+    o = classify(302, headers, "", [])
+    assert o["state"] == UNKNOWN
+    assert o["signals"]["edge_attributed"] is False
+
+
+def test_genuine_cloudflare_challenge_still_takes_the_strong_path():
+    # The weak fallback must never swallow the strong, existing rule.
+    o = classify(403, {"cf-mitigated": "challenge"}, "", [])
+    assert o["state"] == BLOCKED
+    assert o["vendor"] == "cloudflare"
+    assert o["signals"]["edge_attributed"] is False
+
+
+def test_a_real_vendor_signal_wins_over_the_edge_fallback():
+    o = classify(403, {"server": "cloudflare", "x-datadome": "protected"}, "", [])
+    assert o["state"] == BLOCKED
+    assert o["vendor"] == "datadome"
+    assert o["signals"]["edge_attributed"] is False
+
+
+def test_aws_waf_header_wins_over_the_awselb_edge_fallback():
+    # The header path must not be shadowed by the new fallback: a
+    # captcha/challenge action still means AWS WAF, not "attributed to an AWS
+    # load balancer" -- BLOCK mode is the only case with no header at all.
+    o = classify(403, {"x-amzn-waf-action": "captcha", "server": "awselb/2.0"}, "", [])
+    assert o["state"] == BLOCKED
+    assert o["vendor"] == "awswaf"
+    assert o["signals"]["edge_attributed"] is False
+
+
+def test_varnish_server_header_alone_does_not_attribute_to_fastly():
+    # Plenty of sites run Varnish themselves without Fastly in front of them.
+    # Only x-fastly-request-id, or via:varnish PLUS x-served-by together,
+    # count -- server: Varnish by itself must not.
+    o = classify(403, {"server": "Varnish"}, "", [])
+    assert o["state"] == UNKNOWN
+    assert o["signals"]["edge_attributed"] is False
+
+
+def test_403_with_no_edge_identification_at_all_is_unknown():
+    o = classify(403, {}, "", [])
+    assert o["state"] == UNKNOWN
+    assert o["signals"]["edge_attributed"] is False
+
+
+def test_edge_attribution_reason_names_the_edge_and_disclaims_the_challenge():
+    o = classify(403, {"server": "awselb/2.0"}, "", [])
+    reason = o["reason"].lower()
+    assert "awselb" not in reason
+    assert "waf" not in reason
+    assert "load balancer" in reason
+    assert "not a recognised challenge" in reason
+
+
 # ------------------------------------------------------------ classify: passed
 
 def test_200_is_passed_even_with_challenge_platform_in_the_body():

@@ -28,6 +28,12 @@ of those too.
   WAF, Akamai, DataDome, PerimeterX/HUMAN, and Imperva — gated on the status
   codes each one actually challenges with, so an ordinary 200 page is never
   misread as blocked.
+- Falls back to **edge attribution** for Cloudflare, Akamai, CloudFront, AWS
+  ELB and Fastly: a gated status with none of those six vendors' own signals
+  present is still attributed to the edge that answered, rather than read as
+  unrecognised — but flagged as weaker evidence than a recognised challenge,
+  since it could just as well be the site's own rule, a geographic
+  restriction or an authentication requirement.
 - Baseline lane has three modes: through an upstream proxy, direct, or
   switched off.
 - Reaches BlankTrail Proxy either through preset ports you already opened,
@@ -276,6 +282,15 @@ Each target produces one line per lane, and one verdict for the pair.
 When the baseline lane is switched off, a PASS only means BlankTrail got
 through; on its own it does not prove the target challenges bare clients at
 all (see "The two lanes" above).
+
+A `blocked` lane is not always a recognised vendor challenge. For
+Cloudflare, Akamai, CloudFront, AWS ELB and Fastly, a gated status with none
+of those vendors' own signals present is still attributed to that edge
+rather than read as unrecognised — but its reason says so plainly ("edge
+attribution, not a recognised challenge"), because the real cause could just
+as well be the site's own rule, a geographic restriction or an
+authentication requirement. Read the lane's reason before treating a PASS or
+FAIL as proof of active bot protection.
 
 ---
 

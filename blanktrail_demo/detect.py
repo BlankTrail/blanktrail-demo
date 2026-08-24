@@ -44,6 +44,16 @@ def _hdr(headers: Mapping[str, str] | None, name: str) -> str:
     return (value or "").strip()
 
 
+def _has_header_prefix(headers: Mapping[str, str] | None, prefix: str) -> bool:
+    """True if any header NAME starts with `prefix`, case-insensitive. For
+    families like Akamai's x-akamai-* where the values are unpredictable but
+    no other vendor uses the prefix."""
+    if not headers:
+        return False
+    low = prefix.lower()
+    return any(str(name).lower().startswith(low) for name in headers)
+
+
 def _signals(headers, body, cookies) -> dict:
     """Every raw signal in one place, so the verdict and the report read the
     same set."""
@@ -83,6 +93,22 @@ def _signals(headers, body, cookies) -> dict:
         "ak_header": bool(_hdr(headers, "x-akamai-transformed")),
         "ak_cookie": bool(names & {"_abck", "bm_sz", "ak_bmsc"}),
         "ak_body": "errors.edgesuite.net" in low,
+        # Edge attribution (see classify()'s final fallback): identifies which
+        # CDN or load balancer answered, independent of whether anything above
+        # recognised an actual challenge or block.
+        "cf_ray": bool(_hdr(headers, "cf-ray")),
+        "ak_edge_header": _has_header_prefix(headers, "x-akamai-"),
+        "cloudfront_via": "cloudfront" in _hdr(headers, "via").lower(),
+        "cloudfront_server": "cloudfront" in _hdr(headers, "server").lower(),
+        "amz_cf_id": bool(_hdr(headers, "x-amz-cf-id")),
+        "awselb_server": "awselb" in _hdr(headers, "server").lower(),
+        "fastly_request_id": bool(_hdr(headers, "x-fastly-request-id")),
+        "via_varnish": "varnish" in _hdr(headers, "via").lower(),
+        "x_served_by": bool(_hdr(headers, "x-served-by")),
+        # True only on classify()'s edge-attribution fallback path. Set here
+        # (not just left absent) so the key is always present for callers to
+        # check, whichever path actually returned.
+        "edge_attributed": False,
     }
 
 
@@ -105,6 +131,20 @@ def _soft_vendor(signals: dict) -> str:
     if signals["ak_server"] or signals["ak_header"] or signals["ak_cookie"]:
         return "akamai"
     return ""
+
+
+# Human-readable label for classify()'s edge-attribution fallback, keyed by
+# the same vendor code it returns. The reason string below uses this instead
+# of the raw vendor code ("awselb edge") on purpose -- "an AWS load balancer"
+# reads as English and, for that one specifically, does not look like it says
+# "AWS WAF" at a glance.
+EDGE_LABEL = {
+    "cloudflare": "a Cloudflare edge",
+    "akamai": "an Akamai edge",
+    "cloudfront": "a CloudFront edge",
+    "awselb": "an AWS load balancer",
+    "fastly": "a Fastly edge",
+}
 
 
 def classify(status: int, headers: Mapping[str, str], body: str,
@@ -216,6 +256,49 @@ def classify(status: int, headers: Mapping[str, str], body: str,
         return {"state": UNKNOWN, "vendor": "awswaf",
                 "reason": f"HTTP {status}: unrecognised x-amzn-waf-action: {action}",
                 "signals": signals}
+
+    # Edge attribution: the final fallback. Nothing above recognised a
+    # specific challenge or block, but the response still identifies which
+    # CDN or load balancer answered -- so call it `blocked`, attributed to
+    # that edge, instead of leaving a measurable 403 as `unknown` and forcing
+    # a VOID verdict. This is deliberately the weakest attribution in the
+    # module (see the reason string below): unlike every check above, it has
+    # no vendor-specific challenge evidence at all, only the fact that a
+    # known edge answered. It is the last thing tried, and only for the five
+    # edges the owner has asked for -- every other edge (awselb aside, every
+    # other CDN) stays `unknown` until asked.
+    #
+    # Checked in a fixed order -- Cloudflare, Akamai, CloudFront, AWS ELB,
+    # Fastly -- and returns on the first match. The order itself is
+    # arbitrary; only its being fixed matters, so a response that happens to
+    # identify more than one edge resolves the same way on every run instead
+    # of depending on dict/iteration order.
+    if status in ANTIBOT_CHALLENGE_STATUS:
+        server = signals["server"].lower()
+        edge = ""
+        if "cloudflare" in server or signals["cf_ray"]:
+            edge = "cloudflare"
+        elif "akamai" in server or signals["ak_edge_header"]:
+            edge = "akamai"
+        elif (signals["cloudfront_via"] or signals["cloudfront_server"]
+              or signals["amz_cf_id"]):
+            edge = "cloudfront"
+        elif signals["awselb_server"]:
+            edge = "awselb"
+        elif signals["fastly_request_id"] or (
+                signals["via_varnish"] and signals["x_served_by"]):
+            edge = "fastly"
+
+        if edge:
+            signals["edge_attributed"] = True
+            return {"state": BLOCKED, "vendor": edge,
+                    "reason": f"HTTP {status}: response came from behind "
+                              f"{EDGE_LABEL[edge]}, but no check above recognised a "
+                              f"specific challenge or block on it — edge attribution, "
+                              f"not a recognised challenge; could equally be the "
+                              f"site's own rule, a geographic restriction or an "
+                              f"authentication requirement",
+                    "signals": signals}
 
     # 7. THE MAIN INVARIANT: 200 means passed regardless of the body. Markers
     #    lie on their own — Cloudflare injects challenge-platform into ordinary
