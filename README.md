@@ -2,7 +2,10 @@
 
 A client-side **demo** that answers one question, reproducibly: a bare Python
 **client** does not get through a Cloudflare- or AWS-WAF-protected site, and
-[BlankTrail Proxy](https://blanktrail.com) does.
+[BlankTrail Proxy](https://blanktrail.com) does. The classifier also reads
+challenges from four more anti-bot vendors — Akamai, DataDome,
+PerimeterX/HUMAN, and Imperva — so a run can measure BlankTrail against any
+of those too.
 
 **Русская версия: [README.ru.md](README.ru.md)**
 
@@ -21,6 +24,10 @@ A client-side **demo** that answers one question, reproducibly: a bare Python
 - Runs a **baseline lane** and a **BlankTrail lane** against the same target
   list, and turns each pair of outcomes into one of four verdicts — PASS,
   FAIL, VOID, or ERROR.
+- Classifies challenge responses from six anti-bot vendors — Cloudflare, AWS
+  WAF, Akamai, DataDome, PerimeterX/HUMAN, and Imperva — gated on the status
+  codes each one actually challenges with, so an ordinary 200 page is never
+  misread as blocked.
 - Baseline lane has three modes: through an upstream proxy, direct, or
   switched off.
 - Reaches BlankTrail Proxy either through preset ports you already opened,
