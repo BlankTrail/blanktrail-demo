@@ -326,6 +326,31 @@ def classify(status: int, headers: Mapping[str, str], body: str,
             "signals": signals}
 
 
+def _edge_caveat(obs_a: dict | None, obs_b: dict) -> str:
+    """Name any lane whose `blocked` rests only on edge attribution.
+
+    classify() calls a gated status `blocked` when it can name the CDN in front
+    of a site but recognised no vendor challenge on the response. That is a
+    weaker fact than a solved challenge, and the verdict must not spend it as if
+    it were the stronger one: behind such a block there may be no bot protection
+    at all.
+
+    Reads `signals`, which is already a key of the observations verdict() is
+    handed — so this stays a pure function of its arguments, with no new
+    interface. Observations built by hand without that key are tolerated.
+    """
+    lanes = [name for name, o in (("baseline", obs_a), ("BlankTrail", obs_b))
+             if o and o["state"] == BLOCKED
+             and (o.get("signals") or {}).get("edge_attributed")]
+    if not lanes:
+        return ""
+    which = " and ".join(lanes)
+    plural = "lanes'" if len(lanes) > 1 else "lane's"
+    return (f" — but the {which} {plural} block carried no recognised challenge signal and "
+            f"was attributed to the edge in front of the site, so it may equally have been "
+            f"the site's own rule, a geographic restriction or an authentication requirement")
+
+
 def verdict(obs_a: dict | None, obs_b: dict, no_baseline: bool = False) -> dict:
     """Verdict from the two lanes. Pure.
 
@@ -345,7 +370,8 @@ def verdict(obs_a: dict | None, obs_b: dict, no_baseline: bool = False) -> dict:
                     "why": "got through. With no baseline lane this does not prove the "
                            "target challenges anyone at all"}
         return {"verdict": "FAIL",
-                "why": f"did not get through ({obs_b['reason']}) — read the raw dump"}
+                "why": f"did not get through ({obs_b['reason']}) — read the raw dump"
+                       + _edge_caveat(None, obs_b)}
 
     a = obs_a["state"]
 
@@ -369,9 +395,15 @@ def verdict(obs_a: dict | None, obs_b: dict, no_baseline: bool = False) -> dict:
         return {"verdict": "VOID",
                 "why": f"{lane} lane unrecognised ({o['reason']}) — read the raw dump"}
 
+    caveat = _edge_caveat(obs_a, obs_b)
     if b == PASSED:
+        if caveat:
+            # The strong claim is only made on strong evidence.
+            return {"verdict": "PASS",
+                    "why": "the baseline lane was blocked and BlankTrail gets through"
+                           + caveat}
         return {"verdict": "PASS",
                 "why": "protection is active (baseline blocked) and BlankTrail gets through"}
     return {"verdict": "FAIL",
             "why": f"baseline blocked and BlankTrail did not get through either "
-                   f"({obs_b['reason']}) — read the BlankTrail lane's raw dump"}
+                   f"({obs_b['reason']}) — read the BlankTrail lane's raw dump" + caveat}

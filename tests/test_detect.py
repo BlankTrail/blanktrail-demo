@@ -427,3 +427,81 @@ def test_without_a_baseline_the_verdict_comes_from_lane_b_alone(state, want):
 def test_no_baseline_pass_says_what_it_did_not_prove():
     v = verdict(None, obs(PASSED), no_baseline=True)
     assert "challenge" in v["why"].lower()
+
+
+# ------------------------------------------- verdict: edge-attributed evidence
+#
+# classify() calls a gated status `blocked` when it can name the CDN in front of
+# a site but recognised no vendor challenge on the response. That is a weaker
+# fact than a solved challenge, and the verdict text must not spend it as if it
+# were the stronger one — "protection is active" is exactly the claim the
+# edge-attribution reason string was written to avoid making.
+
+
+def edge_obs(state=BLOCKED, reason="r", vendor="cloudflare"):
+    return {"state": state, "reason": reason, "vendor": vendor,
+            "signals": {"edge_attributed": True}}
+
+
+def test_a_pass_on_edge_attributed_evidence_does_not_claim_protection_is_active():
+    v = verdict(edge_obs(), obs(PASSED))
+    assert v["verdict"] == "PASS"
+    assert "protection is active" not in v["why"]
+
+
+def test_a_pass_on_edge_attributed_evidence_says_why_it_is_weaker():
+    v = verdict(edge_obs(), obs(PASSED))
+    low = v["why"].lower()
+    assert "no recognised challenge signal" in low
+    assert "baseline" in low
+
+
+def test_a_pass_on_a_recognised_challenge_still_claims_protection_is_active():
+    v = verdict(obs(BLOCKED), obs(PASSED))
+    assert v["why"] == "protection is active (baseline blocked) and BlankTrail gets through"
+
+
+def test_a_fail_carries_the_caveat_when_the_blanktrail_lane_was_edge_attributed():
+    v = verdict(obs(BLOCKED), edge_obs())
+    assert v["verdict"] == "FAIL"
+    assert "no recognised challenge signal" in v["why"].lower()
+    assert "blanktrail" in v["why"].lower()
+
+
+def test_a_fail_on_two_recognised_challenges_is_worded_exactly_as_before():
+    v = verdict(obs(BLOCKED), obs(BLOCKED, reason="HTTP 403: x"))
+    assert "no recognised challenge signal" not in v["why"].lower()
+    assert v["why"].startswith("baseline blocked and BlankTrail did not get through either")
+
+
+def test_both_lanes_edge_attributed_names_both():
+    v = verdict(edge_obs(), edge_obs())
+    low = v["why"].lower()
+    assert "baseline" in low and "blanktrail" in low
+
+
+def test_no_baseline_fail_carries_the_caveat_when_edge_attributed():
+    v = verdict(None, edge_obs(), no_baseline=True)
+    assert v["verdict"] == "FAIL"
+    assert "no recognised challenge signal" in v["why"].lower()
+
+
+def test_no_baseline_fail_on_a_recognised_challenge_has_no_caveat():
+    v = verdict(None, obs(BLOCKED), no_baseline=True)
+    assert "no recognised challenge signal" not in v["why"].lower()
+
+
+@pytest.mark.parametrize("a,b,want", [
+    (edge_obs(state=PASSED), obs(PASSED), "VOID"),
+    (edge_obs(), obs("error"), "ERROR"),
+    (edge_obs(), obs(UNKNOWN), "VOID"),
+])
+def test_edge_attribution_does_not_disturb_the_non_pass_fail_verdicts(a, b, want):
+    assert verdict(a, b)["verdict"] == want
+
+
+def test_verdict_survives_an_observation_with_no_signals_key():
+    # runner._brief() and older callers build observation-shaped dicts by hand.
+    bare_a = {"state": BLOCKED, "reason": "r", "vendor": ""}
+    bare_b = {"state": PASSED, "reason": "r", "vendor": ""}
+    assert verdict(bare_a, bare_b)["verdict"] == "PASS"
