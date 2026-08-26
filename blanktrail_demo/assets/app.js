@@ -38,6 +38,7 @@ function collect() {
     timeout: Number($("timeout").value),
     delay_min: Number($("delay_min").value),
     delay_max: Number($("delay_max").value),
+    workers: Number($("workers").value),
   };
 }
 

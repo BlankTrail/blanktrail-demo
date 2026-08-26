@@ -92,7 +92,12 @@
     <label class="field">Timeout, s<input id="timeout" type="number" value="60" min="5" max="300"></label>
     <label class="field">Pause min, s<input id="delay_min" type="number" value="0" min="0" step="0.5"></label>
     <label class="field">Pause max, s<input id="delay_max" type="number" value="0" min="0" step="0.5"></label>
+    <label class="field">Workers<input id="workers" type="number" value="1" min="1" max="16"></label>
   </div>
+  <p class="hint">How many targets run at once. 1 keeps every target strictly one at a
+  time, the original behaviour. Pause min/max above are applied per worker, not shared
+  across the run — with several workers going, the effective request rate against the
+  target multiplies accordingly.</p>
   <div class="row">
     <label><input type="radio" name="trust_source" value="system" checked> OS trust store</label>
     <label><input type="radio" name="trust_source" value="api"> Fetch CA from the API</label>
