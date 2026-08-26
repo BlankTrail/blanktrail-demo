@@ -1,7 +1,9 @@
 """Orchestration: turn a form into a stream of NDJSON events.
 
-Single-threaded on purpose. Every target is isolated: an exception inside one
-becomes an ERROR for THAT target, not a dead run.
+Serial by default; optionally concurrent across up to 16 workers (see
+RunPlan.workers). Every target is isolated: an exception inside one becomes
+an ERROR for THAT target, not a dead run — true whether targets run one at a
+time or several at once.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ import random
 import ssl
 import time
 from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 from .btapi import ApiError, BlankTrailApi, open_body
@@ -35,6 +38,12 @@ class RunPlan:
     timeout: int
     delay_min: float
     delay_max: float
+    # How many targets run at once. 1 (serial) is the default — see the
+    # comment at its clamp in build_run() for why — and 16 is the ceiling.
+    # Pacing (delay_min/delay_max) is applied PER WORKER, not shared across
+    # them: with N workers the effective aggregate request rate is roughly
+    # N times what these two numbers alone suggest.
+    workers: int = 1
     warnings: list[str] = field(default_factory=list)
 
 
@@ -51,6 +60,16 @@ def build_run(config: Mapping) -> tuple[RunPlan | None, list[str]]:
     nothing ran."""
     errors: list[str] = []
     warnings: list[str] = []
+
+    # Concurrency is an explicit opt-in, not the default. This tool is a
+    # measurement instrument: delay_min/delay_max exist so a run does not
+    # hammer a target, and running targets one at a time is what makes that
+    # promise hold without the operator having to think about it — going
+    # concurrent is a deliberate choice they make, not something the tool
+    # nudges them toward. Out-of-range values are clamped rather than
+    # rejected: a stray 0 or 200 in the form should not fail the whole run
+    # over one bad number.
+    workers = int(_clamp(config.get("workers"), 1, 16, 1))
 
     targets, target_errors = parse_targets(str(config.get("targets") or ""))
     for parse_error in target_errors:
@@ -96,7 +115,8 @@ def build_run(config: Mapping) -> tuple[RunPlan | None, list[str]]:
             errors.append(str(exc))
             body = {}
         endpoint = ApiEndpoint(api, body,
-                               close_when_done=bool(config.get("close_when_done", True)))
+                               close_when_done=bool(config.get("close_when_done", True)),
+                               workers=workers)
     else:
         errors.append(f"unknown BlankTrail lane mode: {lane_b_mode!r}")
 
@@ -144,6 +164,7 @@ def build_run(config: Mapping) -> tuple[RunPlan | None, list[str]]:
         timeout=int(_clamp(config.get("timeout"), 5, 300, 60)),
         delay_min=delay_min,
         delay_max=delay_max,
+        workers=workers,
         warnings=warnings,
     ), []
 
@@ -160,10 +181,68 @@ def run(plan: RunPlan) -> Iterator[dict]:
                 "rpm": round(stats["req"] * 60 / elapsed, 1), **stats}
 
     def pause() -> None:
+        # Per WORKER, not shared across the run: each concurrent worker
+        # sleeps delay_min..delay_max between its own requests, independent
+        # of whatever any other worker is doing. With N workers the
+        # effective aggregate request rate against the target is roughly N
+        # times what these two numbers alone suggest — read them with the
+        # worker count in mind.
         if plan.delay_max > 0:
             time.sleep(random.uniform(plan.delay_min, plan.delay_max))
 
+    def process_target(index: int, target: Target) -> list[dict]:
+        """Run one target start to finish; return its whole event block.
+
+        Called from a worker thread when plan.workers > 1. Returns instead
+        of yielding so the caller — the single writer of the stream — can
+        hand the whole block over in one piece once this target is done:
+        a target's target/log/result events must never have another
+        target's events land between them, and collecting into a list
+        (instead of yielding across threads) is what guarantees that
+        regardless of completion order. See the "else" branch below.
+        """
+        events: list[dict] = []
+        events.append({"type": "target", "n": index + 1, "total": len(plan.targets),
+                       "id": target.id, "url": target.url})
+        entry_a = entry_b = None
+        fetcher_b = None
+        try:
+            observation_a = None
+            if not no_baseline:
+                events.append({"type": "status", "text": f"{target.id}: baseline lane…"})
+                entry_a, observation_a = probe(fetcher_a, target.url, plan.timeout,
+                                               "A", plan.trust_source)
+                events.append({"type": "log", "entry": entry_a})
+                pause()
+
+            proxy = plan.endpoint.acquire(index)
+            fetcher_b = make_fetcher(plan.protocol, proxy, plan.trust.verify)
+            events.append({"type": "status",
+                           "text": f"{target.id}: BlankTrail lane via {proxy} — the solver "
+                                   f"can take tens of seconds…"})
+            entry_b, observation_b = probe(fetcher_b, target.url, plan.timeout, "B",
+                                           plan.trust_source)
+            events.append({"type": "log", "entry": entry_b})
+            decision = verdict(observation_a, observation_b, no_baseline=no_baseline)
+        except Exception as exc:  # noqa: BLE001
+            decision = {"verdict": "ERROR", "why": f"{type(exc).__name__}: {exc}"}
+        finally:
+            if fetcher_b is not None:
+                try:
+                    fetcher_b.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                plan.endpoint.release(index)
+
+        events.append({"type": "result", "n": index + 1, "id": target.id,
+                       "url": target.url, "verdict": decision["verdict"],
+                       "why": decision["why"], "no_baseline": no_baseline,
+                       "a": _brief(entry_a), "b": _brief(entry_b)})
+        pause()
+        return events
+
     fetcher_a = fetcher_b = None
+    executor: ThreadPoolExecutor | None = None
     try:
         # Preflight before the first request: one explicit failure beats N silent
         # per-target errors.
@@ -188,61 +267,109 @@ def run(plan: RunPlan) -> Iterator[dict]:
                "tls": plan.trust.label,
                "timeout": plan.timeout,
                "pacing": f"{plan.delay_min:.1f}–{plan.delay_max:.1f}s",
-               "warnings": plan.warnings,
+               "workers": plan.workers,
+               "warnings": plan.warnings + list(getattr(plan.endpoint, "warnings", [])),
                "started": time.strftime("%H:%M:%S")}
 
         fetcher_a = None if no_baseline else make_fetcher(plan.protocol, plan.lane_a_proxy,
                                                           True)
-        for index, target in enumerate(plan.targets):
-            yield {"type": "target", "n": index + 1, "total": len(plan.targets),
-                   "id": target.id, "url": target.url}
-            entry_a = entry_b = None
-            try:
-                observation_a = None
-                if not no_baseline:
+
+        if plan.workers <= 1:
+            # Deliberately NOT calling process_target() here: this is the
+            # exact code this tool has always run for a single-threaded
+            # run, unchanged, so that workers == 1 is provably identical to
+            # before — not merely equivalent after a refactor. The "else"
+            # branch below duplicates this per-target logic instead of
+            # sharing it, for that same reason.
+            for index, target in enumerate(plan.targets):
+                yield {"type": "target", "n": index + 1, "total": len(plan.targets),
+                       "id": target.id, "url": target.url}
+                entry_a = entry_b = None
+                try:
+                    observation_a = None
+                    if not no_baseline:
+                        yield {"type": "status",
+                               "text": f"{target.id}: baseline lane…"}
+                        entry_a, observation_a = probe(fetcher_a, target.url, plan.timeout,
+                                                      "A", plan.trust_source)
+                        stats["req"] += 1
+                        yield {"type": "log", "entry": entry_a}
+                        pause()
+
+                    proxy = plan.endpoint.acquire(index)
+                    fetcher_b = make_fetcher(plan.protocol, proxy, plan.trust.verify)
                     yield {"type": "status",
-                           "text": f"{target.id}: baseline lane…"}
-                    entry_a, observation_a = probe(fetcher_a, target.url, plan.timeout,
-                                                  "A", plan.trust_source)
+                           "text": f"{target.id}: BlankTrail lane via {proxy} — the solver can "
+                                   f"take tens of seconds…"}
+                    entry_b, observation_b = probe(fetcher_b, target.url, plan.timeout, "B",
+                                                   plan.trust_source)
                     stats["req"] += 1
-                    yield {"type": "log", "entry": entry_a}
-                    pause()
+                    fetcher_b.close()
+                    fetcher_b = None
+                    plan.endpoint.release(index)
+                    yield {"type": "log", "entry": entry_b}
+                    decision = verdict(observation_a, observation_b, no_baseline=no_baseline)
+                except Exception as exc:  # noqa: BLE001
+                    decision = {"verdict": "ERROR", "why": f"{type(exc).__name__}: {exc}"}
 
-                proxy = plan.endpoint.acquire(index)
-                fetcher_b = make_fetcher(plan.protocol, proxy, plan.trust.verify)
-                yield {"type": "status",
-                       "text": f"{target.id}: BlankTrail lane via {proxy} — the solver can "
-                               f"take tens of seconds…"}
-                entry_b, observation_b = probe(fetcher_b, target.url, plan.timeout, "B",
-                                               plan.trust_source)
-                stats["req"] += 1
-                fetcher_b.close()
-                fetcher_b = None
-                plan.endpoint.release(index)
-                yield {"type": "log", "entry": entry_b}
-                decision = verdict(observation_a, observation_b, no_baseline=no_baseline)
-            except Exception as exc:  # noqa: BLE001
-                decision = {"verdict": "ERROR", "why": f"{type(exc).__name__}: {exc}"}
-
-            stats["done"] += 1
-            stats[STAT_KEY[decision["verdict"]]] += 1
-            yield {"type": "result", "n": index + 1, "id": target.id, "url": target.url,
-                   "verdict": decision["verdict"], "why": decision["why"],
-                   "no_baseline": no_baseline,
-                   "a": _brief(entry_a), "b": _brief(entry_b)}
-            yield stats_event()
-            pause()
+                stats["done"] += 1
+                stats[STAT_KEY[decision["verdict"]]] += 1
+                yield {"type": "result", "n": index + 1, "id": target.id, "url": target.url,
+                       "verdict": decision["verdict"], "why": decision["why"],
+                       "no_baseline": no_baseline,
+                       "a": _brief(entry_a), "b": _brief(entry_b)}
+                yield stats_event()
+                pause()
+        else:
+            # Targets run concurrently, but each one's events are collected
+            # into a list by process_target() (in a worker thread) and only
+            # handed to this generator — the single writer of the stream —
+            # once that target is fully done. A target that finishes first
+            # is emitted first; targets may complete in any order; nothing
+            # from one target's block can land inside another's, because
+            # nothing of a block is yielded until the whole block is in
+            # hand. Stats are folded in here, in this thread only, right as
+            # each block is about to be emitted — not inside the worker
+            # threads — so there is exactly one writer of `stats` and no
+            # counter update can be lost to a race.
+            executor = ThreadPoolExecutor(max_workers=plan.workers)
+            futures = [executor.submit(process_target, index, target)
+                      for index, target in enumerate(plan.targets)]
+            for future in as_completed(futures):
+                events = future.result()
+                stats["req"] += sum(1 for event in events if event["type"] == "log")
+                result_event = next(event for event in events if event["type"] == "result")
+                stats["done"] += 1
+                stats[STAT_KEY[result_event["verdict"]]] += 1
+                for event in events:
+                    yield event
+                yield stats_event()
 
         yield {"type": "status", "text": "Done."}
         yield stats_event()
         yield {"type": "done"}
     except GeneratorExit:
-        # The browser tab closed. Still close the port we opened.
+        # The browser tab closed. The `finally` below shuts the pool down
+        # and closes the port(s) we opened, exactly as it does on every
+        # other exit path — see the comment there.
         raise
     except Exception as exc:  # noqa: BLE001
         yield {"type": "error", "text": f"{type(exc).__name__}: {exc}"}
         yield {"type": "done"}
     finally:
+        if executor is not None:
+            # cancel_futures=True (3.9+) drops every target that has not
+            # started yet instead of draining the whole queue. Plain
+            # shutdown(wait=True) — or just letting the executor's own
+            # context-manager exit run — would let ALL of them run to
+            # completion first, which is exactly the "still grinding away
+            # after the tab closed" behaviour this is meant to avoid. What
+            # IS already running is bounded by plan.workers and by each
+            # request's timeout, so this can still take a moment — Python
+            # has no way to forcibly interrupt a running thread — but that
+            # moment is bounded by the in-flight batch, not by how many
+            # targets were left in the list.
+            executor.shutdown(wait=True, cancel_futures=True)
         for fetcher in (fetcher_a, fetcher_b):
             if fetcher is not None:
                 try:

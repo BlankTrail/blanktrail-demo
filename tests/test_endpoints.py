@@ -52,13 +52,17 @@ def test_preset_close_does_not_touch_ports_it_did_not_open():
 # --------------------------------------------------------------- ApiEndpoint
 
 class FakeApi:
-    def __init__(self, fail_open=None):
+    def __init__(self, fail_open=None, fail_ports=None):
         self.base = "http://127.0.0.1:8891"
         self.opened = []
         self.closed = []
         self.health_calls = 0
         self.close_calls = 0
         self._fail_open = fail_open
+        # Ports that individually refuse to open — for testing a partial
+        # failure across several ports, as opposed to fail_open's "every
+        # attempt fails" or the happy path's "every attempt succeeds".
+        self._fail_ports = fail_ports or set()
 
     def health(self):
         self.health_calls += 1
@@ -67,6 +71,8 @@ class FakeApi:
     def open_port(self, body):
         if self._fail_open:
             raise ApiError(self._fail_open)
+        if body["port"] in self._fail_ports:
+            raise ApiError(f"port {body['port']} is already open")
         self.opened.append(body)
         return {"port": body["port"], "status": "opened",
                 "current_profile": {"name": "Chrome_145_win_0265"}}
@@ -175,6 +181,82 @@ def test_close_does_nothing_when_the_port_was_never_opened():
     api = FakeApi(fail_open="busy")
     endpoint = ApiEndpoint(api, {"port": 9000})
     endpoint.preflight()
+    endpoint.close()
+    assert api.closed == []
+    assert api.close_calls == 1
+
+
+# ------------------------------------------------------- ApiEndpoint workers
+
+def test_workers_defaults_to_a_single_port(monkeypatch):
+    # Backward compatibility: an ApiEndpoint built with no workers argument
+    # behaves exactly like the single-port endpoint of before.
+    _stub_reachable(monkeypatch)
+    api = FakeApi()
+    endpoint = ApiEndpoint(api, {"port": 9000, "protocol": "http"})
+    assert endpoint.preflight() == ""
+    assert [call["port"] for call in api.opened] == [9000]
+
+
+def test_workers_opens_that_many_consecutive_ports(monkeypatch):
+    _stub_reachable(monkeypatch)
+    api = FakeApi()
+    endpoint = ApiEndpoint(api, {"port": 9000, "protocol": "http"}, workers=4)
+    assert endpoint.preflight() == ""
+    assert [call["port"] for call in api.opened] == [9000, 9001, 9002, 9003]
+
+
+def test_acquire_hands_a_different_port_to_each_concurrent_target(monkeypatch):
+    _stub_reachable(monkeypatch)
+    api = FakeApi()
+    endpoint = ApiEndpoint(api, {"port": 9000, "protocol": "http"}, workers=4)
+    endpoint.preflight()
+    proxies = [endpoint.acquire(i) for i in range(4)]
+    assert proxies == ["http://127.0.0.1:9000", "http://127.0.0.1:9001",
+                       "http://127.0.0.1:9002", "http://127.0.0.1:9003"]
+    assert len(set(proxies)) == 4
+    # Round-robins past the pool, same as PresetEndpoint.
+    assert endpoint.acquire(4) == "http://127.0.0.1:9000"
+
+
+def test_close_closes_every_port_it_opened(monkeypatch):
+    _stub_reachable(monkeypatch)
+    api = FakeApi()
+    endpoint = ApiEndpoint(api, {"port": 9000}, workers=3)
+    endpoint.preflight()
+    endpoint.close()
+    assert api.closed == [9000, 9001, 9002]
+
+
+def test_partial_port_failure_proceeds_on_what_opened(monkeypatch):
+    # Losing port 9002 of 4 to "already open" must not fail a run that
+    # could otherwise succeed on the 3 ports that did open — failing the
+    # whole run over one busy port would be worse than useless.
+    _stub_reachable(monkeypatch)
+    api = FakeApi(fail_ports={9002})
+    endpoint = ApiEndpoint(api, {"port": 9000}, workers=4)
+    error = endpoint.preflight()
+    assert error == ""
+    assert [call["port"] for call in api.opened] == [9000, 9001, 9003]
+    assert any("requested 4" in w and "3 opened" in w for w in endpoint.warnings)
+
+
+def test_partial_port_failure_close_only_closes_what_opened(monkeypatch):
+    _stub_reachable(monkeypatch)
+    api = FakeApi(fail_ports={9001})
+    endpoint = ApiEndpoint(api, {"port": 9000}, workers=3)
+    endpoint.preflight()
+    endpoint.close()
+    assert api.closed == [9000, 9002]
+
+
+def test_every_port_failing_is_still_one_explicit_preflight_error(monkeypatch):
+    _stub_reachable(monkeypatch)
+    api = FakeApi(fail_ports={9000, 9001, 9002, 9003})
+    endpoint = ApiEndpoint(api, {"port": 9000}, workers=4)
+    error = endpoint.preflight()
+    assert error != ""
+    assert "already open" in error
     endpoint.close()
     assert api.closed == []
     assert api.close_calls == 1
