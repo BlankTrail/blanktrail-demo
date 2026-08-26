@@ -38,6 +38,8 @@ of those too.
   switched off.
 - Reaches BlankTrail Proxy either through preset ports you already opened,
   or through its REST API, which opens and closes a port for the run.
+- Targets run one at a time by default; an optional worker count (1-16)
+  runs several concurrently, each pacing its own requests independently.
 - TLS verification on the BlankTrail lane is on by default, backed by a
   choice of three trust sources: the OS trust store, a CA fetched from the
   API, or a local CA file.
@@ -126,6 +128,29 @@ for exactly this reason.
 
 ---
 
+## 🔀 Concurrency
+
+Targets normally run one at a time — set with **Workers** in Transport and
+TLS, default 1. This is a measurement instrument, not a load tool: pacing
+(the **Pause min/max** fields in the same section) exists so a run does not
+hammer a target, and running targets serially is what makes that promise
+hold without you having to think about it. Turning Workers up is a
+deliberate choice, not something the demo nudges you toward.
+
+Pacing is applied **per worker**, not to the run as a whole. With N workers,
+each sleeping between Pause min and Pause max independently of the others,
+the effective request rate against the target is roughly N times what the
+two numbers alone suggest.
+
+In REST API mode, raising Workers opens that many BlankTrail ports — port,
+port + 1, and so on — instead of one, so concurrent targets each get their
+own port rather than sharing a single solver instance. A port that fails to
+open (already in use, say) does not fail the run as long as at least one
+opens; the run header names how many were requested against how many
+actually opened.
+
+---
+
 ## 🔌 Reaching BlankTrail: preset proxy vs REST API
 
 The BlankTrail lane needs a proxy URL for each target. The demo gets one in
@@ -166,6 +191,10 @@ In order:
    unless you uncheck **Close the port when done**. Closing is best-effort:
    if it fails, the verdicts already produced are unaffected, and the port
    still closes itself on idle timeout.
+
+With **Workers** (Transport and TLS) above 1, step 2 above happens once per
+worker — port, port + 1, and so on — so concurrent targets each reach
+BlankTrail through their own port instead of one shared between them.
 
 The API key you enter is sent only to the API base URL you configured, in an
 `X-API-Key` header, and is kept in memory for the run — never written to
